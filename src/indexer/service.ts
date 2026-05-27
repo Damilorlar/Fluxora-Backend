@@ -9,6 +9,7 @@ import {
   IngestContractEventsResult,
 } from './types.js';
 import { StreamEventReplayFilter, StreamEventReplayResult } from '../db/types.js';
+import { indexerEventsIngestedTotal, indexerLagSeconds } from '../metrics/businessMetrics.js';
 
 const MAX_EVENTS_PER_BATCH = 100;
 const MAX_EVENT_ID_LENGTH = 128;
@@ -303,6 +304,13 @@ export class IndexerIngestionService {
       this.state.acceptedEventCount += result.insertedEventIds.length;
       this.state.duplicateEventCount += result.duplicateEventIds.length;
       this.state.lastSafeLedger = reportedSafeLedger;
+
+      indexerEventsIngestedTotal.inc(result.insertedEventIds.length);
+      if (events.length > 0) {
+        const maxHappenedAt = Math.max(...events.map(e => Date.parse(e.happenedAt)));
+        const lagSeconds = (Date.now() - maxHappenedAt) / 1000;
+        indexerLagSeconds.set(lagSeconds);
+      }
 
       // Reset reorg detected flag once we are significantly past the reorg height
       if (this.state.reorgDetected && this.state.reorgHeight !== undefined && maxLedgerInBatch > this.state.reorgHeight + 5) {

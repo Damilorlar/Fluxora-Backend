@@ -23,6 +23,22 @@ export interface RetrySchedule {
   retryAt: number;
 }
 
+export interface WebhookOutboxRetryInput {
+  streamId: string;
+  eventType: string;
+  payload: unknown;
+  attemptNumber: number;
+  policy?: EnhancedRetryPolicy;
+  now?: number;
+}
+
+export interface WebhookOutboxRetryPlan {
+  shouldRetry: boolean;
+  attemptNumber: number;
+  retryAt: Date | null;
+  payload: unknown;
+}
+
 /**
  * Calculate backoff delay based on strategy and algorithm
  */
@@ -94,6 +110,49 @@ export function calculateNextRetryTime(
   const jitteredDelay = applyJitter(baseDelay, policy);
   
   return now + jitteredDelay;
+}
+
+/**
+ * Build the durable retry row data for a failed webhook_outbox delivery.
+ *
+ * The outbox table does not have dedicated retry columns, so retries are
+ * represented as a new unprocessed row with created_at set to the next due
+ * time. The dispatcher only claims rows whose created_at is in the past.
+ */
+export function scheduleWebhookOutboxRetry(
+  input: WebhookOutboxRetryInput,
+): WebhookOutboxRetryPlan {
+  const policy = input.policy ?? DEFAULT_RETRY_POLICY;
+  const nextAttemptNumber = input.attemptNumber + 1;
+
+  if (input.attemptNumber >= policy.maxAttempts) {
+    return {
+      shouldRetry: false,
+      attemptNumber: input.attemptNumber,
+      retryAt: null,
+      payload: input.payload,
+    };
+  }
+
+  const now = input.now ?? Date.now();
+  const retryAt = new Date(calculateNextRetryTime(input.attemptNumber, policy, now));
+  const sourcePayload =
+    typeof input.payload === 'object' && input.payload !== null
+      ? input.payload as Record<string, unknown>
+      : { data: input.payload };
+
+  return {
+    shouldRetry: true,
+    attemptNumber: nextAttemptNumber,
+    retryAt,
+    payload: {
+      ...sourcePayload,
+      _webhookRetry: {
+        attemptNumber: nextAttemptNumber,
+        previousAttemptAt: new Date(now).toISOString(),
+      },
+    },
+  };
 }
 
 /**

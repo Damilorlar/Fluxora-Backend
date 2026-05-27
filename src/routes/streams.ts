@@ -73,6 +73,7 @@ import {
   formatZodIssues,
 } from '../validation/schemas.js';
 import type { StreamStatus, StreamFilter } from '../db/types.js';
+import { streamsCreatedTotal } from '../metrics/businessMetrics.js';
 
 export const streamsRouter = Router();
 
@@ -522,6 +523,8 @@ streamsRouter.post(
       sender:        normalizedInput.sender,
       recipient:     normalizedInput.recipient,
     });
+
+    streamsCreatedTotal.inc({ status: stream.status });
 
     res.set('Idempotency-Key', idempotencyKey);
     res.set('Idempotency-Replayed', 'false');
