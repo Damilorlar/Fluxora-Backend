@@ -5,8 +5,9 @@ import { WebSocket } from 'ws';
 import { StreamHub } from '../../src/ws/hub.js';
 
 const JWT_SECRET = 'subscription-filtering-test-secret';
-const RECIPIENT_A = 'GBBD47UZQ5CYVVEUVRYNQZX3G5KRZTAYF5XSVS2UKMCCWW5LJJLXNVQX';
-const RECIPIENT_B = 'GBRPYHIL2CI3WHZDTOOQFC6EB4KJJGUJJBBX7XNLG5DBNVQWDADUZSQX';
+const RECIPIENT_A = 'GCCFZVJYMLYWVOSZ63KUEAQSHYOYEEHZVNEK2EJBIEWJLDKAE6WFEGT7';
+const RECIPIENT_B = 'GDACYVWFQFFZ4ZYTMTE3LXYBN2BBBRGCSJA7E2LCYKNZQSQB5VIXODB6';
+const INVALID_CHECKSUM_RECIPIENT = 'GBBD47UZQ5CYVVEUVRYNQZX3G5KRZTAYF5XSVS2UKMCCWW5LJJLXNVQX';
 
 async function setup(options?: { wsAuthRequired?: boolean; jwtSecret?: string }): Promise<{
   server: http.Server;
@@ -154,6 +155,19 @@ describe('StreamHub subscription filtering', () => {
       expect((messages[0] as Record<string, unknown>)['code']).toBe('UNAUTHORIZED');
       ws.close();
     });
+
+    it('rejects recipient_address filters that fail Stellar StrKey checksum validation', async () => {
+      const ws = await connect(port);
+      const messages = collect(ws);
+
+      send(ws, { type: 'subscribe', recipient_address: INVALID_CHECKSUM_RECIPIENT });
+      await sleep(30);
+
+      expect(messages).toHaveLength(1);
+      expect((messages[0] as Record<string, unknown>)['type']).toBe('error');
+      expect((messages[0] as Record<string, unknown>)['code']).toBe('INVALID_MESSAGE');
+      ws.close();
+    });
   });
 
   describe('recipient_address filters', () => {
@@ -229,6 +243,19 @@ describe('StreamHub subscription filtering', () => {
       expect(messages).toHaveLength(1);
       expect((messages[0] as Record<string, unknown>)['type']).toBe('error');
       expect((messages[0] as Record<string, unknown>)['code']).toBe('FORBIDDEN');
+      ws.close();
+    });
+
+    it('rejects empty filters when the authenticated subject is not a Stellar public key', async () => {
+      const ws = await connect(port, '/ws/streams', tokenFor('user-1'));
+      const messages = collect(ws);
+
+      send(ws, { type: 'subscribe', filter: {} });
+      await sleep(30);
+
+      expect(messages).toHaveLength(1);
+      expect((messages[0] as Record<string, unknown>)['type']).toBe('error');
+      expect((messages[0] as Record<string, unknown>)['code']).toBe('UNAUTHORIZED');
       ws.close();
     });
   });

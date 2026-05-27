@@ -3,12 +3,78 @@ import type { StreamEventReplayFilter } from '../db/types.js';
 import { STELLAR_PUBLIC_KEY_REGEX } from '../validation/schemas.js';
 
 const MAX_FILTER_VALUE_LENGTH = 256;
+const STELLAR_ED25519_PUBLIC_KEY_VERSION_BYTE = 6 << 3;
+const STELLAR_STRKEY_LENGTH = 56;
+const STELLAR_STRKEY_DECODED_LENGTH = 35;
+const STELLAR_STRKEY_PAYLOAD_LENGTH = 33;
+const STELLAR_STRKEY_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+// SEP-23 StrKey validation for Stellar Ed25519 public keys: base32 shape,
+// version byte, and CRC16-XModem checksum.
+function decodeStellarBase32(value: string): number[] | null {
+  const bytes: number[] = [];
+  let bits = 0;
+  let current = 0;
+
+  for (const char of value) {
+    const digit = STELLAR_STRKEY_ALPHABET.indexOf(char);
+    if (digit === -1) return null;
+
+    current = (current << 5) | digit;
+    bits += 5;
+
+    if (bits >= 8) {
+      bytes.push((current >> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+
+  return bytes;
+}
+
+function crc16XModem(bytes: readonly number[]): number {
+  let crc = 0;
+
+  for (const byte of bytes) {
+    crc ^= byte << 8;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 0x8000) !== 0 ? (crc << 1) ^ 0x1021 : crc << 1;
+      crc &= 0xffff;
+    }
+  }
+
+  return crc;
+}
+
+export function isValidStellarPublicKey(value: string): boolean {
+  const candidate = value.trim();
+  if (candidate.length !== STELLAR_STRKEY_LENGTH || !STELLAR_PUBLIC_KEY_REGEX.test(candidate)) {
+    return false;
+  }
+
+  const decoded = decodeStellarBase32(candidate);
+  if (decoded === null || decoded.length !== STELLAR_STRKEY_DECODED_LENGTH) {
+    return false;
+  }
+
+  if (decoded[0] !== STELLAR_ED25519_PUBLIC_KEY_VERSION_BYTE) {
+    return false;
+  }
+
+  const payload = decoded.slice(0, STELLAR_STRKEY_PAYLOAD_LENGTH);
+  const expectedChecksum = crc16XModem(payload);
+  const actualChecksum = decoded[STELLAR_STRKEY_PAYLOAD_LENGTH]!
+    | (decoded[STELLAR_STRKEY_PAYLOAD_LENGTH + 1]! << 8);
+
+  return expectedChecksum === actualChecksum;
+}
 
 const streamIdSchema = z.string().trim().min(1).max(MAX_FILTER_VALUE_LENGTH);
 const recipientAddressSchema = z
   .string()
   .trim()
-  .regex(STELLAR_PUBLIC_KEY_REGEX, 'recipient_address must be a valid Stellar public key');
+  .regex(STELLAR_PUBLIC_KEY_REGEX, 'recipient_address must be a valid Stellar public key')
+  .refine(isValidStellarPublicKey, 'recipient_address must be a valid Stellar StrKey public key');
 
 const subscriptionFilterSchema = z.object({
   stream_id: streamIdSchema.optional(),

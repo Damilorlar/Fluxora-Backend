@@ -43,6 +43,7 @@ import { getCorrelationId } from '../tracing/middleware.js';
 import { logger } from '../lib/logger.js';
 import { CORRELATION_ID_HEADER, isValidCorrelationId } from '../middleware/correlationId.js';
 import {
+  isValidStellarPublicKey,
   parseHandshakeSubscriptionFilter,
   parseWsClientMessage,
   type SubscriptionFilter,
@@ -363,16 +364,18 @@ export class StreamHub {
       return { ok: true, filter };
     }
 
+    const authenticatedRecipient = this.authenticatedRecipientSubject(state);
+
     if (filter.recipientAddress !== undefined) {
-      if (state.authenticatedSubject === undefined) {
+      if (authenticatedRecipient === undefined) {
         return {
           ok: false,
           code: 'UNAUTHORIZED',
-          message: 'recipient_address subscriptions require an authenticated WebSocket subject',
+          message: 'recipient_address subscriptions require an authenticated Stellar public key subject',
         };
       }
 
-      if (filter.recipientAddress !== state.authenticatedSubject) {
+      if (filter.recipientAddress !== authenticatedRecipient) {
         return {
           ok: false,
           code: 'FORBIDDEN',
@@ -382,15 +385,15 @@ export class StreamHub {
       return { ok: true, filter };
     }
 
-    if (state.authenticatedSubject === undefined) {
+    if (authenticatedRecipient === undefined) {
       return {
         ok: false,
         code: 'UNAUTHORIZED',
-        message: 'empty subscription filters require an authenticated WebSocket subject',
+        message: 'empty subscription filters require an authenticated Stellar public key subject',
       };
     }
 
-    return { ok: true, filter: { recipientAddress: state.authenticatedSubject } };
+    return { ok: true, filter: { recipientAddress: authenticatedRecipient } };
   }
 
   private subscriptionKey(filter: SubscriptionFilter): string {
@@ -541,6 +544,12 @@ export class StreamHub {
 
     const subject = result.payload.sub?.trim();
     return subject ? subject : undefined;
+  }
+
+  private authenticatedRecipientSubject(state: ClientState): string | undefined {
+    const subject = state.authenticatedSubject;
+    if (subject === undefined || !isValidStellarPublicKey(subject)) return undefined;
+    return subject;
   }
 
   private applyHandshakeSubscription(ws: WebSocket, req: IncomingMessage): void {

@@ -6,7 +6,7 @@ Endpoint:
 ws://<host>/ws/streams
 ```
 
-Clients receive stream events only after subscribing. A subscription filter may target one stream or one recipient address.
+Clients receive stream events only after subscribing. A subscription filter may target one stream or one recipient address. Recipient addresses must be Stellar Ed25519 public keys encoded as SEP-23 StrKeys.
 
 ## Subscribe
 
@@ -15,7 +15,7 @@ Clients receive stream events only after subscribing. A subscription filter may 
 ```
 
 ```json
-{ "type": "subscribe", "recipient_address": "GBBD47UZQ5CYVVEUVRYNQZX3G5KRZTAYF5XSVS2UKMCCWW5LJJLXNVQX" }
+{ "type": "subscribe", "recipient_address": "GCCFZVJYMLYWVOSZ63KUEAQSHYOYEEHZVNEK2EJBIEWJLDKAE6WFEGT7" }
 ```
 
 Recipient subscriptions require WebSocket authentication. The JWT `sub` must be the canonical recipient address, and `recipient_address` must match it.
@@ -37,7 +37,7 @@ Use the same filter shape:
 ```
 
 ```json
-{ "type": "unsubscribe", "recipient_address": "GBBD47UZQ5CYVVEUVRYNQZX3G5KRZTAYF5XSVS2UKMCCWW5LJJLXNVQX" }
+{ "type": "unsubscribe", "recipient_address": "GCCFZVJYMLYWVOSZ63KUEAQSHYOYEEHZVNEK2EJBIEWJLDKAE6WFEGT7" }
 ```
 
 ## Handshake Filter
@@ -46,7 +46,7 @@ Clients may include an initial subscription filter in the WebSocket URL:
 
 ```text
 ws://<host>/ws/streams?stream_id=stream-123
-ws://<host>/ws/streams?recipient_address=GBBD47UZQ5CYVVEUVRYNQZX3G5KRZTAYF5XSVS2UKMCCWW5LJJLXNVQX
+ws://<host>/ws/streams?recipient_address=GCCFZVJYMLYWVOSZ63KUEAQSHYOYEEHZVNEK2EJBIEWJLDKAE6WFEGT7
 ```
 
 ## Event Delivery
@@ -60,4 +60,4 @@ If a client has both matching stream and recipient subscriptions, it receives th
 
 ## Security Notes
 
-Recipient subscriptions are ownership-sensitive. In deployments where recipient privacy matters, enable `WS_AUTH_REQUIRED=true` and issue JWTs whose `sub` is the canonical Stellar recipient address. The hub does not disclose whether a stream exists when a client subscribes to a stream id; it only indexes the filter for future matching broadcasts.
+Recipient subscriptions are ownership-sensitive. In deployments where recipient privacy matters, enable `WS_AUTH_REQUIRED=true` and issue JWTs whose `sub` is the canonical Stellar recipient address. The hub validates recipient filters with Stellar StrKey shape, version-byte, and checksum rules before indexing them. The hub does not disclose whether a stream exists when a client subscribes to a stream id; it only indexes the filter for future matching broadcasts.

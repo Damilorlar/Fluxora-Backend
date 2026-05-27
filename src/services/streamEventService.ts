@@ -125,6 +125,7 @@ export const streamEventService = {
           hub.broadcast({
             streamId,
             eventId,
+            recipientAddress: input.recipient_address,
             payload: { ...input, event: 'stream.created' },
           }).catch((err: Error) => {
             logError("Failed to broadcast stream created event", { streamId, eventId, error: err.message });
@@ -205,7 +206,7 @@ export const streamEventService = {
       };
 
       if (Object.keys(update).length > 0) {
-        await streamRepository.updateStream(event.streamId, update, correlationId);
+        const updatedStream = await streamRepository.updateStream(event.streamId, update, correlationId);
         info("Stream updated from event", {
           streamId: event.streamId,
           eventId,
@@ -216,6 +217,7 @@ export const streamEventService = {
           hub.broadcast({
             streamId: event.streamId,
             eventId,
+            recipientAddress: updatedStream.recipient_address,
             payload: { ...update, event: 'stream.updated' },
           }).catch((err: Error) => {
             logError("Failed to broadcast stream updated event", { streamId: event.streamId, eventId, error: err.message });
@@ -271,7 +273,7 @@ export const streamEventService = {
     });
 
     try {
-      await streamRepository.updateStream(
+      const updatedStream = await streamRepository.updateStream(
         event.streamId,
         { status: "cancelled" },
         correlationId,
@@ -286,6 +288,7 @@ export const streamEventService = {
         hub.broadcast({
           streamId: event.streamId,
           eventId,
+          recipientAddress: updatedStream.recipient_address,
           payload: { status: 'cancelled', event: 'stream.cancelled' },
         }).catch((err: Error) => {
           logError("Failed to broadcast stream cancelled event", { streamId: event.streamId, eventId, error: err.message });
