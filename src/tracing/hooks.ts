@@ -458,3 +458,104 @@ export function getTracer(): Tracer {
 export function resetTracer(): void {
   globalTracer = null;
 }
+
+// ── OTel-aware business span helpers ─────────────────────────────────────────
+//
+// These thin wrappers call traceSpan() with well-known semantic attribute keys
+// so that spans emitted by business code are consistent with the OTel SDK spans
+// produced by auto-instrumentation.  All helpers are no-ops when tracing is
+// disabled (traceSpan delegates to the global Tracer which short-circuits).
+
+import { trace, context, SpanStatusCode } from '@opentelemetry/api';
+
+/**
+ * Wrap a database query in an OTel span.
+ *
+ * @param sql     — SQL text (must not contain user-supplied values; use params)
+ * @param dbName  — logical database name for the `db.name` attribute
+ * @param fn      — async operation to wrap
+ *
+ * Security: `sql` is recorded as a span attribute.  Never interpolate
+ * user-controlled values into `sql`; always use parameterised queries.
+ */
+export async function traceDbQuery<T>(
+  sql: string,
+  dbName: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const correlationId = getCorrelationIdFromContext();
+  return traceSpan('db.query', correlationId, { 'db.system': 'postgresql', 'db.name': dbName, 'db.statement': sql }, async () => fn());
+}
+
+/**
+ * Wrap a Redis command in an OTel span.
+ *
+ * @param command — Redis command name (e.g. "GET", "SET")
+ * @param key     — cache key (must not contain PII)
+ */
+export async function traceRedisCommand<T>(
+  command: string,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const correlationId = getCorrelationIdFromContext();
+  return traceSpan('redis.command', correlationId, { 'db.system': 'redis', 'db.operation': command, 'db.redis.key': key }, async () => fn());
+}
+
+/**
+ * Wrap a Stellar RPC call in an OTel span.
+ *
+ * @param operation — RPC method name (e.g. "getLatestLedger")
+ */
+export async function traceStellarRpc<T>(
+  operation: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const correlationId = getCorrelationIdFromContext();
+  return traceSpan('stellar.rpc', correlationId, { 'rpc.system': 'stellar', 'rpc.method': operation }, async () => fn());
+}
+
+/**
+ * Wrap a webhook dispatch attempt in an OTel span.
+ *
+ * @param event   — event type (e.g. "stream.created")
+ * @param url     — destination URL (must not contain secrets)
+ * @param attempt — retry attempt number (0 = first attempt)
+ */
+export async function traceWebhookDispatch<T>(
+  event: string,
+  url: string,
+  attempt: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const correlationId = getCorrelationIdFromContext();
+  return traceSpan('webhook.dispatch', correlationId, { 'webhook.event': event, 'webhook.url': url, 'webhook.retry': attempt }, async () => fn());
+}
+
+/**
+ * Record a WebSocket broadcast event on the active OTel span (if any).
+ * Does not create a new span — attaches an event to the current context.
+ */
+export function recordWsBroadcast(streamId: string, eventId: string, recipients: number): void {
+  const activeSpan = trace.getActiveSpan();
+  if (!activeSpan) return;
+  activeSpan.addEvent('ws.broadcast', { 'ws.stream_id': streamId, 'ws.event_id': eventId, 'ws.recipients': recipients });
+}
+
+/**
+ * Retrieve the current correlation ID from the OTel context (traceparent trace-id)
+ * or fall back to 'unknown'.  Used internally by the helpers above.
+ */
+function getCorrelationIdFromContext(): string {
+  const spanContext = trace.getActiveSpan()?.spanContext();
+  if (spanContext?.traceId) return spanContext.traceId;
+  // Fall back to the AsyncLocalStorage-based correlation ID if available.
+  try {
+    // Dynamic import avoided — use a lazy require-style approach.
+    // The correlationStore is in middleware.ts; we avoid a circular dep by
+    // reading from the OTel context only.
+  } catch {
+    // ignore
+  }
+  return 'unknown';
+}
