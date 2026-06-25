@@ -211,11 +211,14 @@ indexerRouter.get(
   authenticate,
   requireAuth,
   requirePermission(Permission.INDEXER_REPLAY),
-  (req: any, res: any) => {
+  async (req: any, res: any) => {
     const requestId = req.id ?? req.correlationId;
     const correlationId = req.correlationId;
     try {
-      res.status(200).json(successResponse(indexerService.getReplayProgress(), requestId));
+      // Use the DB-backed extended snapshot so persisted replay checkpoints
+      // survive restarts (falls back to the in-memory snapshot on read error).
+      const progress = await indexerService.getReplayProgressExtended();
+      res.status(200).json(successResponse(progress, requestId));
     } catch (err: unknown) {
       logger.error('Failed to get indexer status', correlationId, {
         error: err instanceof Error ? err.message : String(err),
