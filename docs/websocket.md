@@ -1,6 +1,11 @@
 # WebSocket Streams
 
+> **Developer guide:** For the full protocol specification — including filter
+> schemas, all message types, JSON examples, close codes, reconnection pattern,
+> and security notes — see **[websocket-protocol.md](./websocket-protocol.md)**.
+
 Fluxora exposes real-time treasury stream updates on `/ws/streams` using standard WebSockets.
+
 
 ## Connection Handshake
 

@@ -46,6 +46,21 @@ function crc16XModem(bytes: readonly number[]): number {
   return crc;
 }
 
+/**
+ * Validates a Stellar Ed25519 public key using SEP-23 StrKey rules:
+ * base32 alphabet check, 56-character length, Ed25519 version byte (`0x30`),
+ * and CRC16-XModem checksum over the 33-byte payload.
+ *
+ * Used by the WebSocket subscription parser to validate `recipient_address`
+ * filter values and JWT `sub` claims before granting recipient-scoped access.
+ *
+ * @param value - Candidate Stellar public key string (leading/trailing whitespace
+ *   is trimmed before validation).
+ * @returns `true` if the key passes all StrKey checks; `false` otherwise.
+ *
+ * @see {@link https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0023.md SEP-23}
+ * @see {@link parseWsClientMessage}
+ */
 export function isValidStellarPublicKey(value: string): boolean {
   const candidate = value.trim();
   if (candidate.length !== STELLAR_STRKEY_LENGTH || !STELLAR_PUBLIC_KEY_REGEX.test(candidate)) {
@@ -102,20 +117,62 @@ const replayMessageSchema = z.object({
   limit: z.number().int().positive().max(1000).optional(),
 }).passthrough();
 
+/**
+ * Normalised subscription filter produced by `parseWsClientMessage`.
+ * Exactly one of `streamId` or `recipientAddress` is populated, or both are
+ * absent when the caller supplied an explicit empty filter `{}`.
+ *
+ * - `streamId` — non-empty string, max 256 characters.
+ * - `recipientAddress` — valid Stellar Ed25519 StrKey public key.
+ *
+ * @see {@link parseWsClientMessage}
+ * @see Docs: `docs/websocket-protocol.md` § Filter reference
+ */
 export interface SubscriptionFilter {
   streamId?: string;
   recipientAddress?: string;
 }
 
+/**
+ * Discriminated union of all valid parsed client → server WebSocket messages.
+ *
+ * | `type`        | Payload                                         |
+ * |---------------|-------------------------------------------------|
+ * | `subscribe`   | `{ filter: SubscriptionFilter }`                |
+ * | `unsubscribe` | `{ filter: SubscriptionFilter }`                |
+ * | `replay`      | `{ filter: StreamEventReplayFilter }`           |
+ *
+ * @see {@link parseWsClientMessage}
+ * @see Docs: `docs/websocket-protocol.md` § Client → Server messages
+ */
 export type WsClientMessage =
   | { type: 'subscribe'; filter: SubscriptionFilter }
   | { type: 'unsubscribe'; filter: SubscriptionFilter }
   | { type: 'replay'; filter: StreamEventReplayFilter };
 
+/**
+ * Result type returned by {@link parseWsClientMessage}.
+ *
+ * On success (`ok: true`) the caller receives the normalised
+ * {@link WsClientMessage}. On failure (`ok: false`) the caller receives a
+ * machine-readable `code` and a human-readable `message` suitable for sending
+ * back to the client as an `error` frame.
+ *
+ * @see Docs: `docs/websocket-protocol.md` § Error codes reference
+ */
 export type WsMessageParseResult =
   | { ok: true; message: WsClientMessage }
   | { ok: false; code: 'UNKNOWN_TYPE' | 'INVALID_MESSAGE'; message: string };
 
+/**
+ * Result type returned by {@link parseHandshakeSubscriptionFilter}.
+ *
+ * On success, `filter` is either a {@link SubscriptionFilter} derived from
+ * query-string parameters or `null` when no parameters were supplied.
+ * On failure, `message` describes the validation error.
+ *
+ * @see Docs: `docs/websocket-protocol.md` § Handshake-time subscription
+ */
 export type HandshakeSubscriptionParseResult =
   | { ok: true; filter: SubscriptionFilter | null }
   | { ok: false; message: string };
@@ -186,6 +243,43 @@ function validationMessage(issues: z.ZodIssue[]): string {
   return issues[0]?.message ?? 'Invalid WebSocket message';
 }
 
+/**
+ * Parses and validates a raw (pre-JSON-parsed) value received from a WebSocket
+ * client into a typed {@link WsClientMessage}.
+ *
+ * Accepts the following `type` values: `"subscribe"`, `"unsubscribe"`, `"replay"`.
+ * Any other type string returns `{ ok: false, code: 'UNKNOWN_TYPE' }`.
+ *
+ * For `subscribe` / `unsubscribe` messages the function additionally:
+ * - Validates filter fields via Zod (`subscriptionMessageSchema`).
+ * - Normalises snake_case / camelCase / nested `filter` aliases into a single
+ *   {@link SubscriptionFilter} via `normalizeSubscriptionFilter`.
+ * - Rejects conflicting alias values and mutually exclusive filter dimensions.
+ *
+ * For `replay` messages the function validates and normalises the replay filter
+ * fields (`afterEventId`, `fromLedger`, `toledger`, `contractId`, `topic`,
+ * `limit`) via `normalizeReplayFilter`.
+ *
+ * @param raw - The parsed JSON value from the WebSocket frame. Must be a
+ *   non-array object with a `type` string field.
+ * @returns A {@link WsMessageParseResult} discriminated by `ok`.
+ *
+ * @example Subscribe by stream ID
+ * ```ts
+ * const result = parseWsClientMessage({ type: 'subscribe', stream_id: 'stream-abc' });
+ * // result.ok === true
+ * // result.message === { type: 'subscribe', filter: { streamId: 'stream-abc' } }
+ * ```
+ *
+ * @example Unknown type
+ * ```ts
+ * const result = parseWsClientMessage({ type: 'ping' });
+ * // result.ok === false, result.code === 'UNKNOWN_TYPE'
+ * ```
+ *
+ * @see {@link parseHandshakeSubscriptionFilter} for URL query-string parsing.
+ * @see Docs: `docs/websocket-protocol.md` § Client → Server messages
+ */
 export function parseWsClientMessage(raw: unknown): WsMessageParseResult {
   if (!isObject(raw)) {
     return { ok: false, code: 'INVALID_MESSAGE', message: 'Message must be a JSON object' };
@@ -236,6 +330,41 @@ export function parseWsClientMessage(raw: unknown): WsMessageParseResult {
   return { ok: false, code: 'UNKNOWN_TYPE', message: `Unknown message type: ${raw.type}` };
 }
 
+/**
+ * Parses an optional subscription filter from a WebSocket upgrade URL's
+ * query-string parameters.
+ *
+ * Accepts the following parameters (aliases are interchangeable):
+ * - `stream_id` / `streamId` — subscribe to a specific stream.
+ * - `recipient_address` / `recipientAddress` — subscribe to a Stellar address.
+ *
+ * When neither parameter is present, returns `{ ok: true, filter: null }`,
+ * indicating the connection should start with no subscription (the client must
+ * send a `subscribe` frame after the socket opens).
+ *
+ * When parameters are present, they are validated via the same Zod schema as
+ * {@link parseWsClientMessage} to ensure field constraints (key format, length,
+ * mutual exclusivity) are enforced at handshake time.
+ *
+ * @param url - The raw request URL string (e.g. `"/ws/streams?stream_id=abc"`).
+ *   The base is irrelevant; only the query-string is inspected.
+ * @returns A {@link HandshakeSubscriptionParseResult} discriminated by `ok`.
+ *
+ * @example No filter — open connection
+ * ```ts
+ * parseHandshakeSubscriptionFilter('/ws/streams');
+ * // { ok: true, filter: null }
+ * ```
+ *
+ * @example Filter by stream ID
+ * ```ts
+ * parseHandshakeSubscriptionFilter('/ws/streams?stream_id=stream-abc');
+ * // { ok: true, filter: { streamId: 'stream-abc' } }
+ * ```
+ *
+ * @see {@link parseWsClientMessage}
+ * @see Docs: `docs/websocket-protocol.md` § Handshake-time subscription
+ */
 export function parseHandshakeSubscriptionFilter(url: string): HandshakeSubscriptionParseResult {
   const params = new URL(url, 'ws://localhost').searchParams;
   const streamId = params.get('stream_id') ?? params.get('streamId');
