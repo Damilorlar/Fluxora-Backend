@@ -91,9 +91,9 @@ describe('SSRF Guard DNS Timeout and Resolution', () => {
 
   it('should abort the signal passed to lookup when timing out', async () => {
     let capturedSignal: AbortSignal | undefined;
-    vi.mocked(dns.promises.lookup).mockImplementation((_hostname, options: any) => {
+    (dns.promises.lookup as any).mockImplementation((_hostname: string, options: any) => {
       capturedSignal = options?.signal;
-      return new Promise(() => {}); // hang
+      return new Promise<never>(() => {}); // hang
     });
 
     const promise = validateWebhookTarget('https://check-signal.com/webhook', {

@@ -236,7 +236,7 @@ async function lookupWithTimeout(hostname: string, timeoutMs: number): Promise<s
   });
 
   try {
-    const lookupPromise = lookup(hostname, { all: false, signal });
+    const lookupPromise = (lookup as (hostname: string, options: { all: false; signal?: AbortSignal }) => Promise<{ address: string; family: number }>)(hostname, { all: false, signal });
     const result = await Promise.race([lookupPromise, timeoutPromise]);
     return result.address;
   } catch (error: any) {
