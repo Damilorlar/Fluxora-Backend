@@ -14,6 +14,8 @@ import {
   verifyIdToken,
   getJwks,
   _resetOidcProviderForTest,
+  stopReplayCacheSweepTimer,
+  _replayCacheForTest,
 } from '../../src/services/oidcProvider.js';
 
 // Helper to generate RSA Key pair
@@ -322,6 +324,118 @@ describe('OIDC Provider Service & Routes', () => {
 
       // Second validation: should throw replay error
       await expect(verifyIdToken(token)).rejects.toThrow('Token replay detected');
+    });
+  });
+
+  // ── Replay Cache Eviction Tests ─────────────────────────────────────────────
+
+  describe('replay cache eviction', () => {
+    beforeEach(async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      vi.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({ keys: [jwk1] }),
+      } as Response);
+    });
+
+    afterEach(async () => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      await _resetOidcProviderForTest();
+    });
+
+    it('should evict expired replay entries on periodic timer sweep', async () => {
+      const token = jwt.sign(
+        { iss: issuer, aud: audience, sub: 'user1' },
+        privateKey,
+        { algorithm: 'RS256', keyid: kid1, expiresIn: '5s' }
+      );
+
+      await expect(verifyIdToken(token)).resolves.toBeDefined();
+
+      vi.advanceTimersByTime(70000);
+
+      const token2 = jwt.sign(
+        { iss: issuer, aud: audience, sub: 'user2' },
+        privateKey,
+        { algorithm: 'RS256', keyid: kid1, expiresIn: '1h' }
+      );
+      await expect(verifyIdToken(token2)).resolves.toBeDefined();
+    });
+
+    it('should not evict unexpired entries during sweep', async () => {
+      const token = jwt.sign(
+        { iss: issuer, aud: audience, sub: 'user1' },
+        privateKey,
+        { algorithm: 'RS256', keyid: kid1, expiresIn: '1h' }
+      );
+      await expect(verifyIdToken(token)).resolves.toBeDefined();
+
+      vi.mocked(mockClient.exists).mockResolvedValue(true);
+      await expect(verifyIdToken(token)).rejects.toThrow('Token replay detected');
+    });
+
+    it('should keep the map bounded under churn without evicting valid entries', () => {
+      const now = Date.now();
+      for (let i = 0; i < _replayCacheForTest.maxSize + 50; i++) {
+        _replayCacheForTest.recordEntry(`fluxora:oidc_replay:token-${i}`, now + 1_000);
+      }
+      expect(_replayCacheForTest.size()).toBeLessThanOrEqual(_replayCacheForTest.maxSize);
+
+      vi.setSystemTime(now + 2_000);
+      _replayCacheForTest.pruneExpired();
+      expect(_replayCacheForTest.size()).toBe(0);
+    });
+
+    it('should stop sweep timer on cache reset', async () => {
+      const token = jwt.sign(
+        { iss: issuer, aud: audience, sub: 'user1' },
+        privateKey,
+        { algorithm: 'RS256', keyid: kid1, expiresIn: '1h' }
+      );
+      await expect(verifyIdToken(token)).resolves.toBeDefined();
+
+      stopReplayCacheSweepTimer();
+      await _resetOidcProviderForTest();
+
+      vi.advanceTimersByTime(120000);
+
+      const token2 = jwt.sign(
+        { iss: issuer, aud: audience, sub: 'user2' },
+        privateKey,
+        { algorithm: 'RS256', keyid: kid1, expiresIn: '1h' }
+      );
+      await expect(verifyIdToken(token2)).resolves.toBeDefined();
+    });
+
+    it('should evict only expired entries during sweep, preserving valid ones', async () => {
+      const token1 = jwt.sign(
+        { iss: issuer, aud: audience, sub: 'user1' },
+        privateKey,
+        { algorithm: 'RS256', keyid: kid1, expiresIn: '5s' }
+      );
+      const token2 = jwt.sign(
+        { iss: issuer, aud: audience, sub: 'user2' },
+        privateKey,
+        { algorithm: 'RS256', keyid: kid1, expiresIn: '1h' }
+      );
+
+      await expect(verifyIdToken(token1)).resolves.toBeDefined();
+      await expect(verifyIdToken(token2)).resolves.toBeDefined();
+
+      vi.advanceTimersByTime(7000);
+
+      const token3 = jwt.sign(
+        { iss: issuer, aud: audience, sub: 'user3' },
+        privateKey,
+        { algorithm: 'RS256', keyid: kid1, expiresIn: '1h' }
+      );
+      await expect(verifyIdToken(token3)).resolves.toBeDefined();
+
+      vi.mocked(mockClient.exists).mockResolvedValue(true);
+      await expect(verifyIdToken(token1)).rejects.toThrow('Token replay detected');
+      await expect(verifyIdToken(token2)).rejects.toThrow('Token replay detected');
     });
   });
 
